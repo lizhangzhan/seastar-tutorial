@@ -7,7 +7,6 @@ build --copt=-DSEASTAR_API_LEVEL=6
 build --copt=-DSEASTAR_SCHEDULING_GROUPS_COUNT=16
 build --copt=-DFMT_LOCALE
 build --copt=-DFMT_SHARED
-build --copt=-Wno-deprecated-builtins
 
 # Compile with C++ 20 features.
 build:c++20 --cxxopt=-std=c++20

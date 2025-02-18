@@ -11,8 +11,8 @@ cc_library(
     "-U_FORTIFY_SOURCE -Wno-maybe-uninitialized -march=native -Wno-error=unused-result",
   ],
   linkopts = select({
-      "@seastar-tutorial//platform:linux_aarch64": ["-L/usr/lib/aarch64-linux-gnu/"],
-      "@seastar-tutorial//conditions:default": ["-L/usr/lib/x86_64-linux-gnu/"],
+      "@platforms//cpu:aarch64": ["-L/usr/lib/aarch64-linux-gnu/"],
+      "//conditions:default": ["-L/usr/lib/x86_64-linux-gnu/"],
     }) + [
     "-L/usr/local/lib",
     "-lboost_program_options",
