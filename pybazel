@@ -1,0 +1,201 @@
+#! /usr/bin/env python3
+from contextlib import closing
+from distutils.version import LooseVersion
+import json
+import os
+import os.path
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+try:
+    from urllib.request import urlopen
+except ImportError:
+    # Python 2.x compatibility hack.
+    from urllib2 import urlopen
+
+TOOLS_BAZEL_PATH = "./tools/bazel"
+BAZEL_REAL = "BAZEL_REAL"
+
+
+def get_version_history(releases_json):
+    ordered = sorted(
+        (LooseVersion(release["tag_name"])
+         for release in releases_json if not release["prerelease"]),
+        reverse=True,
+    )
+    return [str(v) for v in ordered]
+
+
+def get_latest_version(
+        release_url="https://api.github.com/repos/bazelbuild/bazel/releases"):
+    with closing(urlopen(release_url)) as res:
+        raw_data = res.read()
+        body = ""
+        try:
+            body = raw_data.decode(
+                res.info().get_content_charset("iso-8859-1"))
+        except AttributeError:
+            # Python 2.x compatibility hack
+            body = raw_data.decode(res.info().getparam("charset")
+                                   or "iso-8859-1")
+    versions = get_version_history(json.loads(body))
+    if len(versions) == 0:
+        raise ValueError("Empty release list." + release_url)
+    return versions[0]
+
+
+def get_bazel_version():
+    # Check in this order:
+    # - 1. env var "USE_BAZEL_VERSION" is set to a bazel version.
+    # - 2. read workspace_root/.bazelversion to parse a bazel version.
+    # - 3. fallback to latest release version, otherwise.
+    if "USE_BAZEL_VERSION" in os.environ:
+        return os.environ["USE_BAZEL_VERSION"]
+    workspace_root = get_workspace_dir()
+    if workspace_root:
+        bazelversion_path = os.path.join(workspace_root, ".bazelversion")
+        if os.path.exists(bazelversion_path):
+            with open(bazelversion_path, "r") as f:
+                return f.read().strip()
+
+    return get_latest_version()
+
+
+def get_workspace_dir():
+    workspace_dir = os.getcwd()
+    if not os.path.exists(os.path.join(workspace_dir, "WORKSPACE")):
+        raise ValueError(
+            "current directory is not workspace root directory, " +
+            workspace_dir)
+    return workspace_dir
+
+
+def get_os_name():
+    operating_system = platform.system().lower()
+    if operating_system not in ("linux"):
+        raise Exception("Bazel currently only supports Linux.")
+    return operating_system
+
+
+def bazel_full_filename(version):
+    arch_name = normalized_arch_name()
+    if arch_name not in ("x86_64", "arm64"):
+        raise Exception(
+            'Unsupported machine architecture "{}". Bazel currently only supports (x86_64, aarch64).'
+            .format(arch_name))
+
+    os_name = get_os_name()
+    return "bazel-{}-{}-{}".format(version, os_name, arch_name)
+
+
+def normalized_arch_name():
+    machine = platform.machine().lower()
+    if machine == "amd64":
+        machine = "x86_64"
+    elif machine == "aarch64":
+        machine = "arm64"
+
+    return machine
+
+
+def determine_url(version, bazel_filename):
+    # Split version into base version and optional additional identifier.
+    # Example: '0.19.1' -> ('0.19.1', None), '0.20.0rc1' -> ('0.20.0', 'rc1')
+    (version, rc) = re.match(r"(\d*\.\d*(?:\.\d*)?)(rc\d+)?", version).groups()
+    return "https://releases.bazel.build/{}/{}/{}".format(
+        version, rc if rc else "release", bazel_filename)
+
+
+def download_bazel(version, directory):
+    bazel_filename = bazel_full_filename(version)
+    destination_path = os.path.join(directory, bazel_filename)
+    if os.path.exists(destination_path):
+        sys.stderr.write("Skip to download{}...\n".format(destination_path))
+        return destination_path
+
+    if not os.path.exists(directory):
+        try:
+            os.makedirs(directory)
+        except Error as e:
+            if not os.path.isdir(directory):
+                raise e
+
+    url = determine_url(version, bazel_filename)
+    if not os.path.exists(destination_path):
+        sys.stderr.write("Downloading {}...\n".format(url))
+        with tempfile.NamedTemporaryFile(prefix="bazelisk",
+                                         dir=directory,
+                                         delete=False) as t:
+            with closing(urlopen(url)) as response:
+                shutil.copyfileobj(response, t)
+            t.flush()
+            os.fsync(t.fileno())
+        os.rename(t.name, destination_path)
+    os.chmod(destination_path, 0o755)
+    return destination_path
+
+
+def get_bazelisk_directory():
+    base_dir = os.environ.get("HOME")
+    base_dir = os.path.join(base_dir, ".cache")
+    bazelisk_dir = os.path.join(base_dir, "bazelisk")
+    try:
+        os.makedirs(bazelisk_dir)
+    except Exception as e:
+        if not os.path.isdir(bazelisk_dir):
+            raise e
+
+    return bazelisk_dir
+
+
+def delegate_local_bazel():
+    """Match Bazel's own delegation behavior in the builds distributed by most
+    package managers: use tools/bazel if it's present, executable, and not this
+    script.
+    """
+    root = get_workspace_dir()
+    if root:
+        wrapper = os.path.join(root, TOOLS_BAZEL_PATH)
+        if os.path.exists(wrapper) and os.access(wrapper, os.X_OK):
+            if wrapper != os.path.abspath(__file__):
+                return wrapper
+    return None
+
+
+def execute_bazel(bazel_path, argv):
+    sys.stdout.write(
+        "BAZEL: Start to build, bazel_file:{}\n".format(bazel_path))
+    # We cannot use close_fds on Windows, so disable it there.
+    p = subprocess.Popen([bazel_path] + argv, close_fds=os.name != "nt")
+    while True:
+        try:
+            return p.wait()
+        except KeyboardInterrupt:
+            # Bazel will also get the signal and terminate.
+            # We should continue waiting until it does so.
+            pass
+
+
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv
+
+    bazel_path = delegate_local_bazel()
+
+    if not bazel_path:
+        bazelisk_directory = get_bazelisk_directory()
+        bazel_version = get_bazel_version()
+
+        bazel_directory = os.path.join(bazelisk_directory, "bin")
+        bazel_path = download_bazel(bazel_version, bazel_directory)
+
+    return execute_bazel(bazel_path, argv[1:])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,15 @@
+build --repo_env=BAZEL_CXXOPTS="-std=c++20"
+build --repo_env=CC=clang
+
+build --copt=-DSEASTAR_SSTRING
+build --copt=-DSEASTAR_HAVE_DPDK
+build --copt=-DSEASTAR_API_LEVEL=6
+build --copt=-DSEASTAR_SCHEDULING_GROUPS_COUNT=16
+build --copt=-DFMT_LOCALE
+build --copt=-DFMT_SHARED
+build --copt=-Wno-deprecated-builtins
+
+# Compile with C++ 20 features.
+build:c++20 --cxxopt=-std=c++20
+build:c++20 --cxxopt=-stdlib=libc++
+
