@@ -7,6 +7,22 @@ cc_binary(
 )
 
 cc_binary(
+  name = "hello_seastar",
+  srcs = ["example/hello_seastar.cc"],
+  deps = [
+    "@seastar"
+  ]
+)
+
+cc_binary(
+  name = "hello_jsoncpp",
+  srcs = ["example/hello_jsoncpp.cc"],
+  deps = [
+    "@com_github_jsoncpp//:jsoncpp"
+  ]
+)
+
+cc_binary(
   name = "echo_demo",
   srcs = ["example/echo_demo.cc"],
   deps = [
@@ -51,6 +67,8 @@ cc_library(
 cc_binary(
     name = "thread_pool_test",
     srcs = ["example/thread_pool_test.cc"],
+    #linkopts = ["-lm"],
+    linkstatic = True,
     deps = [
         ":thread_pool"
     ],

@@ -39,3 +39,7 @@ bazel-testlogs
 
 # ctags artifacts
 **/tags
+
+# temporarily files
+*.swp
+tools/bazel
