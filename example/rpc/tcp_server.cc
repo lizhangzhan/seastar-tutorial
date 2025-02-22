@@ -1,51 +1,68 @@
-#include <signal.h>
-
-#include <iostream>
 #include <seastar/core/app-template.hh>
 #include <seastar/core/future-util.hh>
+#include <seastar/core/future.hh>
+#include <seastar/core/iostream.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/seastar.hh>
 #include <seastar/core/sleep.hh>
 #include <seastar/net/api.hh>
+#include <seastar/util/log.hh>
 
-using namespace std::chrono_literals;
+seastar::logger logger("tester");
 
-const char* canned_response = "Seastar is the future!\n";
+seastar::future<> handle_connection(seastar::input_stream<char>&& in,
+                                    seastar::output_stream<char>&& out) {
+  return seastar::do_with(
+      std::move(in), std::move(out), [](auto& in, auto& out) {
+        return in.read_exactly(sizeof(uint32_t))
+            .then([&in, &out](auto header_buf) {
+              uint32_t main_message_size;
+              std::memcpy(&main_message_size, header_buf.get(),
+                          sizeof(uint32_t));
+
+              return in.read_exactly(main_message_size)
+                  .then([&in, &out](auto main_message_buf) {
+                    // Deserialize the main message
+                    std::string main_message(main_message_buf.get(),
+                                             main_message_buf.size());
+
+                    // Read the attachment size
+                    return in.read_exactly(sizeof(uint32_t))
+                        .then([&in, &out](auto attachment_size_buf) {
+                          uint32_t attachment_size;
+                          std::memcpy(&attachment_size,
+                                      attachment_size_buf.get(),
+                                      sizeof(uint32_t));
+
+                          // Read the attachment
+                          return in.read_exactly(attachment_size)
+                              .then([&out](auto attachment_buf) {
+                                // Process the attachment (e.g., save to disk)
+                                std::string attachment(attachment_buf.get(),
+                                                       attachment_buf.size());
+                                logger.info("Received attachment of size: {}",
+                                            attachment.size());
+
+                                // Send a response
+                                return out.write("OK").then(
+                                    [&out] { return out.close(); });
+                              });
+                        });
+                  });
+            });
+      });
+}
 
 seastar::future<> service_loop() {
   seastar::listen_options lo;
   lo.reuse_address = true;
   return seastar::do_with(
-      seastar::listen(seastar::make_ipv4_address({12345}), lo),
-      [](auto& listener) {
-        return seastar::keep_doing([&listener]() {
+      seastar::listen(seastar::make_ipv4_address({12345})), [](auto& listener) {
+        return seastar::keep_doing([&listener] {
           return listener.accept().then([](seastar::accept_result res) {
-            auto s = std::move(res.connection);
-            auto in = s.input();
-            auto out = s.output();
-            return seastar::do_with(
-                std::move(s), std::move(in), std::move(out),
-                [](auto& s, auto& in, auto& out) {
-                  return seastar::repeat([&in]() {
-                           return in.read().then([](auto buf) {
-                             if (buf) {
-                               std::cout << std::string(buf.get(), buf.size())
-                                         << std::endl;
-                               return seastar::make_ready_future<
-                                   seastar::stop_iteration>(
-                                   seastar::stop_iteration::no);
-                             }
-                             return seastar::make_ready_future<
-                                 seastar::stop_iteration>(
-                                 seastar::stop_iteration::yes);
-                           });
-                         })
-                      .then([&out]() {
-                        return out.write(canned_response).then([&out] {
-                          return out.close();
-                        });
-                      });
-                });
+            auto in = res.connection.input();
+            auto out = res.connection.output();
+            return handle_connection(std::move(in), std::move(out));
           });
         });
       });
